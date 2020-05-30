@@ -332,7 +332,7 @@ class GaugeGenerator(weewx.reportengine.ReportGenerator):
                                   % (history_value, gaugename))
                 else:
                     if gaugename == 'windRose':
-                        speed_value = self.converter.convertDict(rec)['windSpeed']  # Uses up a lot of time
+                        speed_value = self.converter.convertDict(rec)['windGust']  # Uses up a lot of time
 
                         try:
                             value_knot = float(weewx.units.convert((speed_value, wind_units[0], None), 'knot')[0])
