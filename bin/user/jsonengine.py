@@ -149,6 +149,11 @@ class JSONGenerator(weewx.reportengine.ReportGenerator):
                 ret, category_history, daily_highlow_values = self.gen_history_data(category, category_config, self.chart_dict[chart][category].get('data_binding'))
                 category_config['target_unit'] = self.get_target_unit(category)
                 category_config['obs_group'] = self.get_obs_group(category)
+                # Symmetric with the gauge_config['observationType'] addition
+                # below: browser-side convert() needs the obs name to look up
+                # the source unit. Without it, chart series silently render in
+                # storage units when display units are overridden.
+                category_config['observationType'] = category
 
                 if ret is not None:
                     ngen += 1
