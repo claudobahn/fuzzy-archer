@@ -137,8 +137,19 @@ function setGaugeValue(gauge, value, timestamp) {
     let option = gauge.getOption();
     let valueSeries = option.series[0];
     addValue(gauge.weewxData.dataset, value, timestamp);
-    if (option.series[1] !== undefined) {
-        option.series[1].axisLine.lineStyle.color = getHeatColor(valueSeries.max, valueSeries.min, valueSeries.splitNumber, valueSeries.axisTick.splitNumber, gauge.weewxData.dataset.data);
+    // Update the heat-map ring only when it is actually present (gauges.js
+    // adds it at series[1] with name 'heat' iff heatMapEnabled is true).
+    // The bare `series[1] !== undefined` check assumed series[1] always
+    // meant the heat ring; in practice any further series spliced onto the
+    // chart -- or simply heatMapEnabled: false in the gauge config -- would
+    // make this access throw "Cannot read property 'lineStyle' of undefined"
+    // on the next MQTT message and silently freeze the gauge. Match the
+    // 'heat' name gauges.js gives the series.
+    let heatSeries = option.series[1];
+    if (heatSeries !== undefined
+        && heatSeries.name === 'heat'
+        && heatSeries.axisLine && heatSeries.axisLine.lineStyle) {
+        heatSeries.axisLine.lineStyle.color = getHeatColor(valueSeries.max, valueSeries.min, valueSeries.splitNumber, valueSeries.axisTick.splitNumber, gauge.weewxData.dataset.data);
     }
     gauge.setOption(option);
     updateGaugeValue(value, gauge);
