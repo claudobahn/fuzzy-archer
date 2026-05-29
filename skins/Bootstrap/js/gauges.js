@@ -173,6 +173,26 @@ function spliceWindRose(gauge, gaugeId) {
         obs_group: (typeof observationGroups !== 'undefined' && observationGroups[speedObs]) || 'group_speed'
     };
 
+    // JSONGenerator only emits weewxData[<obs>] history for obs that are
+    // referenced as a gauge or chart subsection. If either of our two obs is
+    // missing, the rose can still populate from live MQTT messages but
+    // historical seeding silently does nothing -- which reads as "the rose
+    // doesn't work" until the user reads the report-engine log carefully.
+    // One console.warn per missing obs surfaces it cheaply.
+    if (weewxData[dirObs] === undefined) {
+        console.warn("windRose on '" + gaugeId + "': weewxData['" + dirObs +
+                     "'] missing -- direction history won't seed the rose. " +
+                     "Add a gauge or chart entry for '" + dirObs +
+                     "' so JSONGenerator emits it.");
+    }
+    if (weewxData[speedObs] === undefined) {
+        console.warn("windRose on '" + gaugeId + "': weewxData['" + speedObs +
+                     "'] missing -- speed history won't seed the rose. " +
+                     "Add a gauge or chart entry for '" + speedObs +
+                     "', or set the windRose.speedObs config to an obs you " +
+                     "already render.");
+    }
+
     let DIRS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
 
     function dirBin(deg) { return Math.floor(((deg + 11.25) % 360) / 22.5); }
