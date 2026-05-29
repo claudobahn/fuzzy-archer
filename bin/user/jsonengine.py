@@ -77,10 +77,20 @@ class JSONGenerator(weewx.reportengine.ReportGenerator):
         self.json_dict = self.skin_dict['JSONGenerator']
         self.gauge_dict = self.skin_dict['LiveGauges']
         self.chart_dict = self.skin_dict['LiveCharts']
+        # [StdReport][[Defaults]][[[Units]]] and [[[Labels]]] are OPTIONAL --
+        # weewx itself treats them as deployment-wide overrides on top of the
+        # skin defaults, and a station that hasn't set any unit-group or label
+        # overrides has no reason for those sections to exist in weewx.conf.
+        # Using a direct subscript here raises KeyError, JSONGenerator
+        # terminates, and weewxData.json silently never gets written -- the
+        # dashboard's live gauges/charts just stop updating. Use .get(..., {})
+        # so a missing override section is a no-op merge (skin defaults stay
+        # as-is), matching weewx's own treatment of these sections as optional.
+        defaults = self.config_dict.get('StdReport', {}).get('Defaults', {})
         self.units_dict = self.skin_dict['Units']
-        merge_config(self.units_dict, self.config_dict['StdReport']['Defaults']['Units'])
+        merge_config(self.units_dict, defaults.get('Units', {}))
         self.labels_dict = self.skin_dict['Labels']
-        merge_config(self.labels_dict, self.config_dict['StdReport']['Defaults']['Labels'])
+        merge_config(self.labels_dict, defaults.get('Labels', {}))
         self.frontend_data = {}
 
         # Create a converter to get this into the desired units
