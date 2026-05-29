@@ -10,6 +10,12 @@ function loadGauges() {
         let documentGaugeId = gaugeId + "Gauge";
 
         if (gauges[documentGaugeId] !== undefined) {
+            // Clear any spliceWindRose timer attached to this gauge before we
+            // dispose -- ECharts disposes the chart but our setInterval would
+            // keep firing setOption against a defunct instance and throwing.
+            if (gauges[documentGaugeId].windRoseTimer !== undefined) {
+                clearInterval(gauges[documentGaugeId].windRoseTimer);
+            }
             gauges[documentGaugeId].dispose();
             gauges[documentGaugeId] = undefined;
         }
@@ -38,6 +44,7 @@ function loadGauges() {
         gauge.weewxData.heatMapEnabled = parseBooleanDefaultTrue(gauge.weewxData.heatMapEnabled);
         gauge.weewxData.stuckNeedleEnabled = parseBooleanDefaultTrue(gauge.weewxData.stuckNeedleEnabled);
         gauge.weewxData.axisLineEnabled = parseBooleanDefaultTrue(gauge.weewxData.axisLineEnabled);
+        gauge.weewxData.windRoseEnabled = parseBooleanDefaultFalse(gauge.weewxData.windRoseEnabled);
         if (gauge.weewxData.obs_group === "group_direction") {
             minvalue = 0;
             maxvalue = 360;
@@ -108,7 +115,233 @@ function loadGauges() {
             }
         }
         gauge.setOption(gaugeOption);
+
+        // Optional wind-rose overlay: a stacked polar bar chart spliced into
+        // the SAME ECharts instance, showing historical direction frequency
+        // binned by speed. Only meaningful on direction gauges (we need both
+        // a wind direction obs and a wind speed obs); opt-in via
+        // windRoseEnabled. See spliceWindRose() below for the full config.
+        if (gauge.weewxData.windRoseEnabled
+            && gauge.weewxData.obs_group === "group_direction") {
+            spliceWindRose(gauge, gaugeId);
+        }
     }
+}
+
+// Splice a polar bar wind rose into a direction-gauge's ECharts instance,
+// overlaid on top of the gauge arc + needle. Pairs the gauge's direction obs
+// with a second (speed) obs and aggregates the recent timespan into 16
+// compass sectors x N speed bins, sized as percentage-of-total samples per
+// segment. Speed values are converted to the gauge-config-supplied unit via
+// units.js's convert(), so the bin breakpoints/labels are written in display
+// units (knot, mph, m_per_sec, ...) regardless of storage unit.
+//
+// Config (under the gauge subsection in skin.conf):
+//   [[[<gauge>]]]              # the windDir (or other group_direction) gauge
+//       payload_key = windDir
+//       windRoseEnabled = true
+//       [[[[windRose]]]]
+//           speedObs = windSpeed         # default 'windSpeed'
+//           bins     = 10, 15, 20        # upper-bound (exclusive) per speed bin;
+//                                        # the last bin sweeps everything above
+//                                        # the previous max (i.e. >20)
+//           colors   = #5b9bd5, #ffc000, #00b050, #000000
+//           labels   = Light, Medium, Heavy, No sailing
+function spliceWindRose(gauge, gaugeId) {
+    let rc = gauge.weewxData.windRose || {};
+    // Direction obs name -- gauges.js sets observationType to the gauge id at
+    // init, but explicitly named here so the source of the historical series
+    // and live-payload lookup is clear (and so a gauge whose subsection name
+    // diverges from the obs name can override it).
+    let dirObs = gauge.weewxData.observationType || gaugeId;
+    let speedObs = rc.speedObs || 'windSpeed';
+    // Bin upper-bounds in target display unit. N values produce N+1 segments
+    // (the last segment is "above the last value").
+    let binMaxes = toFloats(rc.bins, [10, 20, 30]);
+    let colors = toArray(rc.colors, ['#5b9bd5', '#5cb85c', '#ffc000', '#d9534f']);
+    let labels = toArray(rc.labels, ['light', 'moderate', 'strong', 'very strong']);
+    let bins = colors.map((color, i) => ({
+        max: i < binMaxes.length ? binMaxes[i] : Infinity,
+        color: color,
+        label: labels[i] || ('bin ' + i)
+    }));
+    // Look up the obs's actual unit group via units.js's observationGroups
+    // table rather than assuming group_speed -- a deployment using a custom
+    // unit group for wind speed (rare but valid) would otherwise mis-convert.
+    let speedConvCfg = {
+        observationType: speedObs,
+        obs_group: (typeof observationGroups !== 'undefined' && observationGroups[speedObs]) || 'group_speed'
+    };
+
+    let DIRS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+
+    function dirBin(deg) { return Math.floor(((deg + 11.25) % 360) / 22.5); }
+    function speedBin(spd) {
+        for (let i = 0; i < bins.length; i++) if (spd <= bins[i].max) return i;
+        return bins.length - 1;
+    }
+
+    // Find the live MQTT payload key for an obs: weewx-mqtt/publish emits keys
+    // as <obs>_<unit-label> (e.g. windSpeed_mph), or bare <obs> when there's
+    // no unit label (windDir). Match the bare obs first, then any suffixed form.
+    function livePayloadValue(pl, obs) {
+        if (pl[obs] !== undefined) return Number(pl[obs]);
+        let prefix = obs + '_';
+        for (let key in pl) {
+            if (key.indexOf(prefix) === 0) return Number(pl[key]);
+        }
+        return null;
+    }
+
+    // Collect {ts, dir, spd}: historical from weewxData[dirObs]/[speedObs]
+    // plus newest from liveData; clip to the dashboard's timespan window.
+    // Number.isFinite filters out null/undefined AND NaN -- the latter would
+    // otherwise pass a bare `!= null` check and end up binned into bins[-1]
+    // or the highest-speed bin, both of which falsify the rose silently.
+    function samples() {
+        let dirS = weewxData[dirObs] || [];
+        let spdS = weewxData[speedObs] || [];
+        let map = new Map();
+        dirS.forEach(p => {
+            if (Number.isFinite(p[1])) map.set(p[0], { ts: p[0], dir: p[1] });
+        });
+        spdS.forEach(p => {
+            if (!Number.isFinite(p[1])) return;
+            let converted = convert(speedConvCfg, p[1]);
+            if (!Number.isFinite(converted)) return;
+            let e = map.get(p[0]) || { ts: p[0] };
+            e.spd = converted;
+            map.set(p[0], e);
+        });
+        (typeof liveData !== 'undefined' ? liveData : []).forEach(pair => {
+            let ts = pair[0], pl = pair[1];
+            let dir = livePayloadValue(pl, dirObs);
+            let spd = livePayloadValue(pl, speedObs);
+            if (!Number.isFinite(dir) || !Number.isFinite(spd)) return;
+            let converted = convert(speedConvCfg, spd);
+            if (!Number.isFinite(converted)) return;
+            map.set(ts, { ts: ts, dir: dir, spd: converted });
+        });
+        let hrs = (weewxData.config && weewxData.config.timespan) || 1;
+        let cutoff = Date.now() - hrs * 3600000;
+        let out = [];
+        map.forEach(e => {
+            if (e.ts >= cutoff && Number.isFinite(e.dir) && Number.isFinite(e.spd)) out.push(e);
+        });
+        return out;
+    }
+
+    // Aggregate samples into 16-direction x N-speed-bin counts, normalize to
+    // percentage-of-total, compute the per-direction stack maxima, and round
+    // to a "nice" upper bound for the radial axis so the splitLines land on
+    // round percentage values.
+    function aggregate() {
+        let counts = []; for (let i = 0; i < 16; i++) counts.push(bins.map(() => 0));
+        samples().forEach(s => { counts[dirBin(s.dir)][speedBin(s.spd)]++; });
+        let total = 0; counts.forEach(d => d.forEach(c => total += c));
+        let pct = counts.map(d => d.map(c => total > 0 ? (c / total * 100) : 0));
+        let maxStack = Math.max(0, ...pct.map(d => d.reduce((a, b) => a + b, 0)));
+        let niceMax = Math.max(5, Math.ceil(maxStack / 5) * 5);   // nearest 5, min 5
+        let series = bins.map((b, idx) => ({
+            id: 'windRose-' + idx,
+            name: b.label, type: 'bar', coordinateSystem: 'polar', stack: 'wind',
+            data: pct.map(d => d[idx]),
+            itemStyle: { color: b.color },
+            z: 1                                            // below gauge needle (default z 2)
+        }));
+        return { series, niceMax };
+    }
+
+    // Two polar systems sharing the same drawing area. Polar 0 holds the bars
+    // with N at top -- its angleAxis.startAngle = 101.25 (N at 12 o'clock with
+    // boundaryGap centering) drives BOTH where the first category sits AND
+    // where the radius axis labels would render, leaving the % labels along
+    // the vertical. Polar 1 is invisible-data and exists only so its own
+    // angleAxis.startAngle (-45, the SE radial in ECharts polar coords) can
+    // anchor the radius labels along the SE direction instead. Same min/max
+    // on both radiusAxes keeps the labels aligned with polar 0's splitLine
+    // rings.
+    let opt = gauge.getOption();
+    let { series, niceMax } = aggregate();
+    // Outer radius depends on whether the gauge's own axisLine is visible:
+    // when it is (default), stop at 70% so the bars don't crowd the 95%-radius
+    // arc + its cardinal/value labels; when axisLineEnabled is false, the
+    // arc is hidden so the bars can extend out to 95% (right up against
+    // where the cardinal labels sit at distance 2).
+    let outerR = gauge.weewxData.axisLineEnabled ? '70%' : '95%';
+    gauge.setOption({
+        polar: [
+            { center: ['50%','50%'], radius: ['8%', outerR] },
+            { center: ['50%','50%'], radius: ['8%', outerR] }
+        ],
+        angleAxis: [
+            {
+                polarIndex: 0,
+                type: 'category', data: DIRS,
+                boundaryGap: true, startAngle: 101.25, clockwise: true,
+                axisLine: {show: false}, axisTick: {show: false}, axisLabel: {show: false}
+            },
+            {
+                polarIndex: 1,
+                type: 'value', startAngle: -45,        // SE radial in ECharts polar
+                min: 0, max: 360,
+                axisLine: {show: false}, axisTick: {show: false},
+                axisLabel: {show: false}, splitLine: {show: false}
+            }
+        ],
+        radiusAxis: [
+            {
+                polarIndex: 0,
+                type: 'value', min: 0, max: niceMax,
+                axisLine: {show: false}, axisTick: {show: false},
+                splitLine: {show: true, lineStyle: {type: 'dashed', color: '#d0d0d0'}},
+                axisLabel: {show: false}              // labels rendered on polar 1's axis below
+            },
+            {
+                polarIndex: 1,
+                type: 'value', min: 0, max: niceMax,
+                axisLine: {show: false}, axisTick: {show: false}, splitLine: {show: false},
+                axisLabel: {show: true, showMinLabel: false, fontSize: 7, color: '#888', formatter: '{value}%'}
+            }
+        ],
+        tooltip: {
+            trigger: 'item', appendToBody: true,
+            position: function(point, params, dom, rect, size) {
+                return [point[0] + 12, point[1] - size.contentSize[1] - 8];
+            },
+            formatter: function(p) {
+                if (p.componentSubType !== 'bar') return '';
+                return '<b>' + p.name + '</b> &middot; ' + p.seriesName +
+                       '<br/>' + p.value.toFixed(1) + '%';
+            }
+        },
+        series: opt.series.concat(series)
+    });
+
+    // Periodic re-render: update bar data + the radius-axis max on both
+    // polars (so polar 1's labels keep matching polar 0's splitLines as the
+    // data scale shifts). Bars are matched by id; the radiusAxis array is
+    // merged by index, so polar 0's `max` and polar 1's `max` both update.
+    // Store the interval handle on the gauge so loadGauges can clearInterval
+    // it before disposing -- otherwise a stale tick fires setOption against a
+    // disposed chart instance and throws.
+    gauge.windRoseTimer = setInterval(() => {
+        let { series, niceMax } = aggregate();
+        gauge.setOption({
+            radiusAxis: [{ max: niceMax }, { max: niceMax }],
+            series: series
+        });
+    }, 5000);
+}
+
+// configobj-list-to-JS-array helpers: configobj gives scalar for 1 value,
+// array for >=2, undefined when the key is absent.
+function toArray(v, fallback) {
+    if (v === undefined || v === null) return fallback;
+    return Array.isArray(v) ? v : [v];
+}
+function toFloats(v, fallback) {
+    return toArray(v, fallback).map(Number);
 }
 
 function parseBooleanDefaultTrue(value) {
