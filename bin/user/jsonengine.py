@@ -168,10 +168,15 @@ class JSONGenerator(weewx.reportengine.ReportGenerator):
                 log.debug("Adding %s to frontend_data." % gauge)
                 self.frontend_data[gauge] = gauge_history
 
+        # weewx.units.convert expects a ValueTuple (value, unit, group), not a
+        # bare value -- the old `convert(altitude[0], 'meter')` form was passing
+        # the string altitude value as the ValueTuple itself, which subscripted
+        # the string character-by-character ("string index out of range") for
+        # any 'foot' altitude. Build the ValueTuple from altitude[0] + the
+        # source unit in altitude[1] so any unit (foot, meter, ...) works
+        # without the explicit if/else.
         altitude = self.config_dict['Station']['altitude']
-        altitude_m = altitude[0]
-        if altitude[1] == 'foot':
-            altitude_m = convert(altitude[0], 'meter')[0]
+        altitude_m = convert((float(altitude[0]), altitude[1], 'group_altitude'), 'meter')[0]
         events = self.get_day_night_events(first_value_timestamp, last_value_timestamp, self.config_dict['Station']['longitude'], self.config_dict['Station']['latitude'], altitude_m)
         self.frontend_data['day_night_events'] = events
 
