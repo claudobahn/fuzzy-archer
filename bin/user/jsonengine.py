@@ -162,6 +162,14 @@ class JSONGenerator(weewx.reportengine.ReportGenerator):
             ret, gauge_history, _ = self.gen_history_data(gauge, gauge_config, self.gauge_dict[gauge].get('data_binding'))
             gauge_config['target_unit'] = self.get_target_unit(gauge)
             gauge_config['obs_group'] = self.get_obs_group(gauge)
+            # Browser-side units.js convert() needs observationType to look up
+            # the source unit for this obs in source_unit_system.<unit> before
+            # converting to target_unit. Without it, gauges silently render in
+            # the storage unit when the user has set a display-unit override
+            # (e.g. group_speed = knot for a US-storage station): payload
+            # arrives as mph but the gauge labels say "knot" and the needle
+            # doesn't move.
+            gauge_config['observationType'] = gauge
 
             if ret is not None:
                 ngen += 1
