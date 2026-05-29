@@ -37,6 +37,7 @@ function loadGauges() {
         let axisTickSplitNumber = 5;
         gauge.weewxData.heatMapEnabled = parseBooleanDefaultTrue(gauge.weewxData.heatMapEnabled);
         gauge.weewxData.stuckNeedleEnabled = parseBooleanDefaultTrue(gauge.weewxData.stuckNeedleEnabled);
+        gauge.weewxData.axisLineEnabled = parseBooleanDefaultTrue(gauge.weewxData.axisLineEnabled);
         if (gauge.weewxData.obs_group === "group_direction") {
             minvalue = 0;
             maxvalue = 360;
@@ -74,7 +75,11 @@ function loadGauges() {
                 gaugeOption.series[1].startAngle = 90;
                 gaugeOption.series[1].endAngle = -270;
             }
-            gaugeOption.series[0].axisLabel.distance = 10;
+            // axisLabel.distance is measured outward from the axisLine. With
+            // the line hidden (axisLineEnabled: false) the cardinal labels
+            // float well outside the visible gauge; collapse the gap so they
+            // sit just beyond the ticks instead.
+            gaugeOption.series[0].axisLabel.distance = gauge.weewxData.axisLineEnabled ? 10 : 2;
             gaugeOption.series[0].axisLabel.fontSize = gauge.weewxData.labelFontSize === undefined ? 12 : gauge.weewxData.labelFontSize;
             gaugeOption.series[0].axisLabel.fontWeight = 'bold';
             gaugeOption.series[0].axisLabel.formatter = function (value) {
@@ -153,9 +158,9 @@ function getGaugeOption(name, min, max, splitNumber, axisTickSplitNumber, lineCo
             radius: '95%',
             axisLine: {
                 lineStyle: {
-                    width: 8,
+                    width: weewxData.axisLineEnabled ? 8 : 0,
                     color: lineColor,
-                    shadowBlur: 3
+                    shadowBlur: weewxData.axisLineEnabled ? 3 : 0
                 }
             },
             pointer: {
@@ -169,12 +174,20 @@ function getGaugeOption(name, min, max, splitNumber, axisTickSplitNumber, lineCo
             axisTick: {
                 splitNumber: axisTickSplitNumber,
                 length: 4,
+                // axisTick/splitLine/axisLabel distances are measured outward
+                // from the axisLine. With the line hidden (axisLineEnabled
+                // false) ECharts still uses its default offsets, leaving
+                // ticks and the rim labels floating off the gauge body.
+                // Pin them at distance 0 (right at the gauge radius) and 2
+                // (just past them) so the inner-structure stays anchored.
+                distance: weewxData.axisLineEnabled ? undefined : 0,
                 lineStyle: {
                     color: 'auto'
                 }
             },
             splitLine: {
                 length: 6,
+                distance: weewxData.axisLineEnabled ? undefined : 0,
                 lineStyle: {
                     color: 'auto'
                 }
@@ -182,6 +195,7 @@ function getGaugeOption(name, min, max, splitNumber, axisTickSplitNumber, lineCo
             axisLabel: {
                 fontWeight: 'normal',
                 fontSize: weewxData.labelFontSize === undefined ? 8 : weewxData.labelFontSize,
+                distance: weewxData.axisLineEnabled ? undefined : 2,
                 color: '#777',
                 formatter: function (value, index) {
                     return round(value, 1);
