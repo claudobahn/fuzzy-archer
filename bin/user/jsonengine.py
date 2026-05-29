@@ -59,6 +59,16 @@ class JSONGenerator(weewx.reportengine.ReportGenerator):
             log.info("JSONGenerator failed to read config or config missing")
         else:
             if enabled:
+                # On a fresh install the archive is empty, so lastGoodStamp()
+                # returns None and the `self.lastGoodStamp - 1` call in setup()
+                # would raise TypeError ("unsupported operand type(s) for -:
+                # 'NoneType' and 'int'") and the whole report cycle would
+                # terminate. CheetahGenerator skips this case with a
+                # "cannot find start time" message; do the same here so the
+                # report engine carries on with the other generators.
+                if self.db_binder.get_manager().lastGoodStamp() is None:
+                    log.info("JSONGenerator: empty archive database, skipping until data arrives")
+                    return
                 self.setup()
                 self.gen_data()
             else:
