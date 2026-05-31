@@ -94,7 +94,12 @@ function loadCharts() {
         chartOption = getChartOption(chartSeriesConfigs);
 
         for (let serie of chartOption.series) {
-            if (serie.data === undefined || serie.data === null) {
+            // Empty-archive guard: on a fresh database (or any obs that hasn't
+            // logged a sample yet) weewxData[categoryId] is `[]`, which makes
+            // serie.data[0][0] throw and aborts loadCharts() for every chart.
+            // The undefined / null branch covered missing keys but not empty
+            // arrays.
+            if (serie.data === undefined || serie.data === null || serie.data.length === 0) {
                 continue;
             }
             let currenStart = serie.data[0][0] - archiveIntervalSeconds * 1000;
