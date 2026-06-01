@@ -111,6 +111,31 @@ function loadCharts() {
 
         chartSeriesConfigs.push(getDayNightSeries(chartOption, chartId, start, end));
 
+        // Bar series + type:"time" xAxis + no visible bars (all data
+        // empty, null, or zero) is an ECharts quirk: the coordinate
+        // system gets set up correctly but xAxis tick labels are
+        // silently suppressed. Verified empirically -- rain (empty bar
+        // after all-null aggregation) and radiation (UV all-zero bar at
+        // night) rendered with no xAxis ticks; lightning_strikes (empty
+        // SCATTER on the same dashboard with identical xAxis config)
+        // rendered ticks normally. Switch invisible bars to invisible
+        // lines so ECharts treats the chart as line-only for axis
+        // rendering purposes; the series stays in chartOption.series so
+        // any later updateChart() / addValue() flow still finds it by
+        // name. The next loadCharts() pass sees hasVisibleBar=true once
+        // non-zero data arrives and leaves the series as type:"bar".
+        chartOption.series.forEach(s => {
+            if (s.type !== "bar") return;
+            let hasVisibleBar = s.data && s.data.some(p =>
+                Array.isArray(p) && p[1] !== null && p[1] !== undefined && Number(p[1]) > 0
+            );
+            if (!hasVisibleBar) {
+                s.type = "line";
+                s.lineStyle = { opacity: 0 };
+                s.symbol = "none";
+            }
+        });
+
         chartOption.animation = chart.weewxData.animation === undefined || !chart.weewxData.animation.toLowerCase() === "false";
         chartOption.textStyle = {
             fontSize: chart.weewxData.fontSize === undefined ? 10 : chart.weewxData.fontSize,
@@ -143,10 +168,26 @@ function getDayNightSeries(chartOption, chartId, start, end) {
         data[data.length - 1][0] = end;
     }
 
+    // Anchor the dayNight series with real y values (0) instead of undefined.
+    // ECharts treats a series with all-undefined y values as having no usable
+    // data: for charts where this synthetic series is the ONLY one with
+    // anchored points (rain with all-null archive rows, lightning_strikes
+    // scatter with no strike events), no coordinate system is initialised,
+    // no xAxis ticks render, and the markArea has nothing to paint against.
+    // With real (0, 0) values the coord system always initialises and the
+    // markArea bands render reliably -- empty data charts now show their
+    // axes + day/night shading instead of a blank rectangle.
+    //
+    // The line itself stays invisible: lineStyle.opacity=0 hides the segment
+    // between the two anchor points, symbol='none' hides the markers. So the
+    // y=0 anchors do their job without drawing a visible flat line across
+    // every chart.
     let dayNightSerie = {
         "name": DAY_NIGHT,
         "type": "line",
-        "data": [[start, undefined], [end, undefined]],
+        "data": [[start, 0], [end, 0]],
+        "lineStyle": { "opacity": 0 },
+        "symbol": "none",
         "markArea": getDayNightMarkArea(),
     }
 
