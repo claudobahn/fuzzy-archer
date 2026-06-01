@@ -88,25 +88,26 @@ function loadCharts() {
             }
         }
 
-        let chartOption;
-        let start;
-        let end;
-        chartOption = getChartOption(chartSeriesConfigs);
+        let chartOption = getChartOption(chartSeriesConfigs);
 
-        for (let serie of chartOption.series) {
-            // Empty-archive guard: on a fresh database (or any obs that hasn't
-            // logged a sample yet) weewxData[categoryId] is `[]`, which makes
-            // serie.data[0][0] throw and aborts loadCharts() for every chart.
-            // The undefined / null branch covered missing keys but not empty
-            // arrays.
-            if (serie.data === undefined || serie.data === null || serie.data.length === 0) {
-                continue;
-            }
-            let currenStart = serie.data[0][0] - archiveIntervalSeconds * 1000;
-            let currentEnd = serie.data[serie.data.length - 1][0] + archiveIntervalSeconds * 1000;
-            start = start === undefined || start >= currenStart ? currenStart : start;
-            end = end === undefined || end <= currentEnd ? currentEnd : end;
-        }
+        // Anchor every chart's xAxis to the current timespan window ending
+        // NOW rather than letting ECharts auto-fit to series data range.
+        // Without this, a stalled archive leaves the chart's right edge
+        // frozen at the last data timestamp -- the dashboard renders
+        // yesterday's data with yesterday's day/night shading even when the
+        // user is viewing the next afternoon. Forcing the range to
+        // [now - timespan, now] makes every chart a live "current N hours"
+        // view: data points render where they land (empty trailing region
+        // when archive is stale, which honestly signals "no recent data"),
+        // every chart shares an identical window (so the rain chart's axis
+        // matches the line charts to the pixel), and day/night shading
+        // reflects current time given enough forward sun events in the
+        // weewxData.json (jsonengine.py generates a 36 h forward buffer).
+        let timespanMs = weewxData.config.timespan * 3600000;
+        let end = Date.now();
+        let start = end - timespanMs;
+        chartOption.xAxis.min = start;
+        chartOption.xAxis.max = end;
 
         chartSeriesConfigs.push(getDayNightSeries(chartOption, chartId, start, end));
 
@@ -569,6 +570,14 @@ function getTimestampDiv(parentId, timestamp) {
     return outerDiv;
 }
 
+// Plausible upper bound on how long after the last sun event the same
+// brightness state is still valid. 14 h covers the longest "night" / "day"
+// stretch outside the polar circles, and prevents the trailing band from
+// painting a stale "night" colour across the chart's right edge when the
+// data outlives the jsonengine-emitted events (e.g. archive keeps writing
+// past sunset but no new sun event has been generated yet).
+const MAX_TRAILING_BAND_MS = 14 * 60 * 60 * 1000;
+
 function getDayNightMarkArea() {
     let dayNightEvents = weewxData['day_night_events'];
     let data = [];
@@ -579,7 +588,21 @@ function getDayNightMarkArea() {
         (element, index) => {
             let last = dayNightEvents[index + 1];
             let start = index == 0 ? undefined : element[0];
-            let end = index == (dayNightEvents.length - 1) ? undefined : last[0];
+            // For the trailing band, cap the extent at MAX_TRAILING_BAND_MS
+            // past the last known event instead of letting it run to the
+            // chart's right edge. Without the cap, a sunset event at 19:00
+            // followed by chart data extending to "now" (e.g. live MQTT
+            // continued past sunset, or our empty-data axis fallback
+            // anchored the chart to current time) paints "night" across the
+            // whole trailing region -- including current-afternoon territory
+            // where it's clearly daytime. The cap leaves anything past the
+            // bound unshaded, which is the right "we don't know" UX.
+            let end;
+            if (index == dayNightEvents.length - 1) {
+                end = element[0] + MAX_TRAILING_BAND_MS;
+            } else {
+                end = last[0];
+            }
             let extentEnd = last !== undefined ? last[1] : element[1];
             let part = getPart(start, end, element[1], extentEnd);
             data.push(part);
