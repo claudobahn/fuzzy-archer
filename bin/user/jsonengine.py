@@ -200,7 +200,19 @@ class JSONGenerator(weewx.reportengine.ReportGenerator):
         # without the explicit if/else.
         altitude = self.config_dict['Station']['altitude']
         altitude_m = convert((float(altitude[0]), altitude[1], 'group_altitude'), 'meter')[0]
-        events = self.get_day_night_events(first_value_timestamp, last_value_timestamp, self.config_dict['Station']['longitude'], self.config_dict['Station']['latitude'], altitude_m)
+        # Generate sun events covering the chart window plus a 36 h forward
+        # buffer. The forward buffer lets the dashboard correctly shade
+        # day/night for "now" even when an archive briefly stalls and the
+        # JSON isn't being regenerated continuously, or when the dashboard
+        # is anchored to current time rather than to last archive timestamp
+        # (charts.js now-anchors the xAxis when the empty-aggregate
+        # fallback fires). 36 h covers a full day + cushion for time-zone /
+        # DST quirks, and is cheap to compute -- SunEvents iterates astro
+        # transits, not wall-clock seconds.
+        import time as _time
+        now_ts = int(_time.time())
+        events_end = max(last_value_timestamp, now_ts) + 36 * 3600
+        events = self.get_day_night_events(first_value_timestamp, events_end, self.config_dict['Station']['longitude'], self.config_dict['Station']['latitude'], altitude_m)
         self.frontend_data['day_night_events'] = events
 
         # Write JSON self.frontend_data output if a filename is specified
