@@ -295,7 +295,12 @@ function getChartOption(seriesConfigs) {
             data: legendData
         },
         color: colors,
-        backgroundColor: backGroundColor,
+        // Transparent chart background lets the host page's background show
+        // through, so the chart blends in instead of carrying a baseline dark
+        // tint (`#111111` at ~4% alpha). The day/night markArea bands remain
+        // the only chromatic signal: day = page background as-is, night =
+        // page background + a darker overlay (see getColorModifier).
+        backgroundColor: 'transparent',
         toolbox: {
             show: false,
             top: 10,
