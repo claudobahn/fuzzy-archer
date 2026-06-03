@@ -149,7 +149,7 @@ function setGaugeValue(gauge, value, timestamp) {
     if (heatSeries !== undefined
         && heatSeries.name === 'heat'
         && heatSeries.axisLine && heatSeries.axisLine.lineStyle) {
-        heatSeries.axisLine.lineStyle.color = getHeatColor(valueSeries.max, valueSeries.min, valueSeries.splitNumber, valueSeries.axisTick.splitNumber, gauge.weewxData.dataset.data);
+        heatSeries.axisLine.lineStyle.color = getHeatColor(valueSeries.max, valueSeries.min, valueSeries.splitNumber, valueSeries.axisTick.splitNumber, gauge.weewxData.dataset.data, gaugeHistoryMs(gauge.weewxData));
     }
     gauge.setOption(option);
     updateGaugeValue(value, gauge);

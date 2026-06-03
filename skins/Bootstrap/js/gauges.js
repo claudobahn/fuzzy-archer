@@ -242,8 +242,7 @@ function spliceWindRose(gauge, gaugeId) {
             if (!Number.isFinite(converted)) return;
             map.set(ts, { ts: ts, dir: dir, spd: converted });
         });
-        let hrs = (weewxData.config && weewxData.config.timespan) || 1;
-        let cutoff = Date.now() - hrs * 3600000;
+        let cutoff = Date.now() - gaugeHistoryMs(gauge.weewxData);
         let out = [];
         map.forEach(e => {
             if (e.ts >= cutoff && Number.isFinite(e.dir) && Number.isFinite(e.spd)) out.push(e);
@@ -496,7 +495,7 @@ function getGaugeOption(name, min, max, splitNumber, axisTickSplitNumber, lineCo
             axisLine: {
                 lineStyle: {
                     width: '100%',
-                    color: getHeatColor(max, min, splitNumber, axisTickSplitNumber, data),
+                    color: getHeatColor(max, min, splitNumber, axisTickSplitNumber, data, gaugeHistoryMs(weewxData)),
                     shadowBlur: 3,
                 }
             },
@@ -529,9 +528,26 @@ $(window).on('resize', function () {
     }
 });
 
-function getHeatColor(max, min, splitNumber, axisTickSplitNumber, data) {
+// Hours of history a gauge's heat ring / wind rose should reflect. A per-gauge
+// `historyTimespan` (passed through the gauge style block) lets the gauges show
+// a tighter window than the live charts -- e.g. a 1h frequency distribution on
+// the heat rings while the charts keep the 3h dashboard.timespan. Falls back to
+// the chart timespan when a gauge doesn't set it. Defined at top level so its
+// `weewxData` is the GLOBAL (inside getGaugeOption the param of the same name
+// shadows it); the gauge's own config is passed in as gaugeData.
+function gaugeHistoryMs(gaugeData) {
+    let hrs = Number(gaugeData && gaugeData.historyTimespan)
+              || (weewxData.config && weewxData.config.timespan) || 1;
+    return hrs * 3600000;
+}
+
+function getHeatColor(max, min, splitNumber, axisTickSplitNumber, data, maxAgeMs) {
     if (data === undefined || data === null) {
         return "#ffffff00";
+    }
+    if (maxAgeMs) {
+        let cutoff = Date.now() - maxAgeMs;
+        data = data.filter(p => Array.isArray(p) && p[0] >= cutoff);
     }
     let ticksNumber = splitNumber * axisTickSplitNumber;
     let range = max - min;
