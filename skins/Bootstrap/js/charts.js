@@ -273,7 +273,11 @@ function getChartOption(seriesConfigs) {
             },
             scale: true,
         };
-        if (obs_group === "group_speed" || obs_group === "group_distance") {
+        if (obs_group === "group_speed" || obs_group === "group_distance" || obs_group === "group_uv") {
+            // group_uv: UV index is always >= 0, and on the radiation chart UV
+            // renders as bars (whose height must read from a 0 baseline), so
+            // floor the axis at 0 rather than letting scale:true auto-fit it to
+            // a non-zero min. Max stays auto (UV can spike into the teens).
             yAxisItem.min = 0;
         }
         if (obs_group === "group_percent") {
