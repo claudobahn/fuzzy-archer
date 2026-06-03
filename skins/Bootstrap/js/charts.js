@@ -398,8 +398,20 @@ function getTooltip(seriesConfigs) {
 
                 let formattedValue = "-";
                 let dataValue;
-                if (Array.isArray(params) && params[i] !== undefined && params[i]["data"] !== undefined) {
-                    dataValue = params[i]["data"][1];
+                if (Array.isArray(params)) {
+                    // Match the param by series NAME, not by loop index. The
+                    // axis-trigger params array is ordered by ECharts series
+                    // index and may not line up with seriesConfigs: extra
+                    // series can be interleaved (e.g. a band overlay), and
+                    // ECharts drops series that have no point at the pointer x,
+                    // so on a multi-series chart where the obs have differing
+                    // gaps params[i] can resolve to another series' value.
+                    // Fall back to a direct lookup by axis value when this
+                    // series has no param at the pointer.
+                    let p = params.find(function (x) { return x.seriesName === seriesItem.name; });
+                    dataValue = (p !== undefined && p["data"] !== undefined)
+                        ? p["data"][1]
+                        : getDataValue(axisValue, seriesItem.data);
                 } else {
                     dataValue = getDataValue(axisValue, seriesItem.data);
                 }
