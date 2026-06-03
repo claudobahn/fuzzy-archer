@@ -399,15 +399,13 @@ function getTooltip(seriesConfigs) {
                 let formattedValue = "-";
                 let dataValue;
                 if (Array.isArray(params)) {
-                    // Match the param by series NAME, not by loop index. The
-                    // axis-trigger params array is ordered by ECharts series
-                    // index and may not line up with seriesConfigs: extra
-                    // series can be interleaved (e.g. a band overlay), and
-                    // ECharts drops series that have no point at the pointer x,
-                    // so on a multi-series chart where the obs have differing
-                    // gaps params[i] can resolve to another series' value.
-                    // Fall back to a direct lookup by axis value when this
-                    // series has no param at the pointer.
+                    // Match the param by series NAME, not by loop index: extra
+                    // series interleaved into the ECharts series array (the IQR
+                    // band helpers; day/night) make params[i] no longer line up
+                    // with seriesConfigs[i], which would read another series'
+                    // value (e.g. windGust showing the windSpeed band's Q1).
+                    // Fall back to a direct lookup by axis value when the series
+                    // has no param at this x (a gap).
                     let p = params.find(function (x) { return x.seriesName === seriesItem.name; });
                     dataValue = (p !== undefined && p["data"] !== undefined)
                         ? p["data"][1]
@@ -448,6 +446,20 @@ function getTooltip(seriesConfigs) {
                     formattedValue = formattedDataValue + getUnitString(formattedDataValue, unitString);
                 }
                 tooltipHTML += ('<tr style="font-size: small;"><td>' + marker.replace(BG_REGEX, "background-color:" + seriesItem.lineColor + ";") + seriesItem.name + '</td><td style="text-align: right; padding-left: 10px; font-weight: bold;">' + formattedValue + '</td></tr>');
+
+                // Surface the rolling IQR band's spread as a sub-row, using the
+                // exact rendered Q1/Q3 at the hovered x (seriesConfig.iqrByX,
+                // keyed by the band's midpoint-shifted x positions). Absent at
+                // the live edge (the band's ~half-window gap), so it simply
+                // doesn't show there -- matching the chart.
+                if (seriesItem.showRollingIqrBandMinutes && seriesItem.iqrByX) {
+                    let b = seriesItem.iqrByX[axisValue];
+                    if (b !== undefined) {
+                        let lo = format(b[0], seriesItem.decimals);
+                        let hi = format(b[1], seriesItem.decimals);
+                        tooltipHTML += ('<tr style="font-size: x-small; opacity: 0.7;"><td style="padding-left: 18px;">' + seriesItem.showRollingIqrBandMinutes + 'm IQR</td><td style="text-align: right; padding-left: 10px;">' + lo + "–" + hi + getUnitString(hi, unitString) + '</td></tr>');
+                    }
+                }
 
             }
             return show ? tooltipHTML + '</table>' : "";
@@ -675,6 +687,18 @@ function getSeriesConfig(seriesConfig, series, colors, z) {
             seriesConfig.yAxisIndex,
             seriesConfig.weewxColumn + "_iqrBand");
         bands.forEach(function (b) { series.push(b); colors.push(seriesConfig.lineColor); });
+        // Stash Q1/Q3 by x-position so the tooltip can surface the band's
+        // spread at the hovered time using the EXACT rendered values (no
+        // recompute). bands[0]=lower(Q1), bands[1]=delta(Q3-Q1), sharing the
+        // (midpoint-shifted) x positions. seriesConfig is the same object the
+        // tooltip formatter iterates, so this is visible there.
+        let q1d = bands[0].data, dld = bands[1].data, byX = {};
+        for (let k = 0; k < q1d.length; k++) {
+            if (q1d[k][1] !== null && dld[k][1] !== null) {
+                byX[q1d[k][0]] = [q1d[k][1], q1d[k][1] + dld[k][1]];
+            }
+        }
+        seriesConfig.iqrByX = byX;
     }
 }
 
