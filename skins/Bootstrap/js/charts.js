@@ -71,6 +71,7 @@ function loadCharts() {
                 unit: weewxData.units.Labels[category.target_unit],
                 symbol: category.symbol,
                 symbolSize: category.symbolSize,
+                showRollingIqrBandMinutes: category.showRollingIqrBandMinutes,
                 chartId: chartId,
             }
             if (category.lineWidth !== undefined) {
@@ -223,8 +224,8 @@ function getChartOption(seriesConfigs) {
     }
 
     for (let serie of series) {
-        if (serie.name.startsWith(DAY_NIGHT_KEY)) {
-            continue;
+        if (!serie.name || serie.name.startsWith(DAY_NIGHT_KEY)) {
+            continue;   // skip day/night + the unnamed IQR-band helper series
         }
         let legendItem = {
             name: serie.name
@@ -472,6 +473,65 @@ function getAggregateAxisValue(axisValue, data, halfAggregateInterval) {
     return aggregateAxisValue;
 }
 
+// Linear-interpolation quantile of an already-ascending-sorted array.
+function quantileSorted(sorted, q) {
+    let n = sorted.length;
+    if (n === 0) return null;
+    if (n === 1) return sorted[0];
+    let pos = (n - 1) * q;
+    let base = Math.floor(pos);
+    let rest = pos - base;
+    return sorted[base + 1] !== undefined
+        ? sorted[base] + rest * (sorted[base + 1] - sorted[base])
+        : sorted[base];
+}
+
+// Rolling interquartile (Q1..Q3) band for a series, as two ECharts line series
+// using the stacked-area trick (ECharts has no native band): an invisible
+// lower=Q1 line + a transparent-line area carrying (Q3-Q1) stacked on top,
+// which fills Q1..Q3 translucently. For each sample at t we take the trailing
+// [t-windowMs, t] values; the result is plotted at the window MIDPOINT
+// (t - windowMs/2) so the band centres on the data it summarises instead of
+// lagging it by half a window -- leaving an honest ~half-window gap at the
+// live edge (the centred spread there isn't knowable yet). Derived in JS from
+// the series' own data, so no extra obs/column. NB recomputed at load + each
+// async reload, not per live packet (v1).
+function rollingIqrBandSeries(data, windowMs, color, yAxisIndex, stackName) {
+    let half = windowMs / 2;
+    let lower = [];
+    let upperDelta = [];
+    for (let i = 0; i < data.length; i++) {
+        let t = data[i][0];
+        let v = data[i][1];
+        let at = t - half;
+        if (v === null || v === undefined || isNaN(v)) {
+            lower.push([at, null]);
+            upperDelta.push([at, null]);
+            continue;
+        }
+        let win = [];
+        for (let j = 0; j <= i; j++) {
+            let p = data[j];
+            if (p[0] >= t - windowMs && p[0] <= t && p[1] !== null && p[1] !== undefined && !isNaN(p[1])) {
+                win.push(Number(p[1]));
+            }
+        }
+        win.sort(function (a, b) { return a - b; });
+        let q1 = quantileSorted(win, 0.25);
+        let q3 = quantileSorted(win, 0.75);
+        lower.push([at, q1]);
+        upperDelta.push([at, q3 - q1]);
+    }
+    let base = {
+        type: "line", stack: stackName, name: "", symbol: "none",
+        silent: true, z: 0, yAxisIndex: yAxisIndex, lineStyle: { opacity: 0 }
+    };
+    return [
+        Object.assign({}, base, { data: lower, areaStyle: { opacity: 0 } }),
+        Object.assign({}, base, { data: upperDelta, areaStyle: { color: color, opacity: 0.18 } }),
+    ];
+}
+
 function getSeriesConfig(seriesConfig, series, colors, z) {
     colors.push(seriesConfig.lineColor);
     if (seriesConfig.data === undefined) {
@@ -588,6 +648,22 @@ function getSeriesConfig(seriesConfig, series, colors, z) {
     }
 
     series.push(serie);
+
+    // Optional rolling interquartile band behind this series. The two helper
+    // series are pushed straight onto the ECharts `series` array (not into
+    // seriesConfigs), so they stay out of the tooltip table (built from
+    // seriesConfigs) and the legend (empty name, skipped below). Push matching
+    // placeholder colours so the chart-level palette stays index-aligned with
+    // the real series that follow.
+    if (seriesConfig.showRollingIqrBandMinutes) {
+        let bands = rollingIqrBandSeries(
+            seriesConfig.data,
+            Number(seriesConfig.showRollingIqrBandMinutes) * 60000,
+            seriesConfig.lineColor,
+            seriesConfig.yAxisIndex,
+            seriesConfig.weewxColumn + "_iqrBand");
+        bands.forEach(function (b) { series.push(b); colors.push(seriesConfig.lineColor); });
+    }
 }
 
 function getXMinInterval() {
