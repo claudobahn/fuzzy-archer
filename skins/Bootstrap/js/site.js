@@ -192,16 +192,23 @@ function addValues(chart, jPayload, timestamp) {
     // Slide the window so the right edge tracks the latest data as loop
     // packets arrive, instead of staying frozen at the Date.now() captured
     // when loadCharts() last ran (the chart only fully rebuilds once per
-    // archive interval via the async reload). Use max(wall-clock, packet
-    // time): if the browser clock lags the station, Date.now() alone would
-    // put xAxis.max behind this packet's point and ECharts would clip it off
-    // the right edge -- the packet's dateTime (server clock) keeps it on
-    // screen; when the browser is ahead/in-sync, Date.now() wins so the edge
-    // shows "now" between packets. `timestamp` here is still the packet time
-    // (addValueAndUpdateChart's reassignment to Date.now() for aggregated
-    // series is local to that function). getOption() normalises xAxis to an
-    // array.
-    let edge = Math.max(Date.now(), timestamp);
+    // archive interval via the async reload).
+    //
+    // edge = max(wall-clock, packet_time + one archive interval):
+    //  - packet_time + interval gives the newest point a one-interval right
+    //    margin instead of jamming it against the border -- this restores the
+    //    padding the pre-now-anchor loadCharts had (last_ts +
+    //    archiveIntervalSeconds) and reserves the slot the next sample lands
+    //    in. The packet's dateTime is the station/server clock (site.js reads
+    //    jPayload.dateTime), so if the browser clock lags the station this
+    //    keeps the newest point (and its margin) on screen rather than
+    //    clipped past a Date.now()-only max.
+    //  - Date.now() wins when the browser is ahead/in-sync, so the edge still
+    //    advances to "now" between packets.
+    // `timestamp` here is the packet time (addValueAndUpdateChart's
+    // reassignment to Date.now() for aggregated series is local to that
+    // function). getOption() normalises xAxis to an array.
+    let edge = Math.max(Date.now(), timestamp + archiveIntervalSeconds * 1000);
     let timespanMs = weewxData.config.timespan * 3600000;
     option.xAxis[0].max = edge;
     option.xAxis[0].min = edge - timespanMs;
