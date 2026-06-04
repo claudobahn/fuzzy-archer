@@ -549,6 +549,14 @@ function getHeatColor(max, min, splitNumber, axisTickSplitNumber, data, maxAgeMs
         let cutoff = Date.now() - maxAgeMs;
         data = data.filter(p => Array.isArray(p) && p[0] >= cutoff);
     }
+    if (data.length === 0) {
+        // No samples in the heat window (e.g. a stalled feed whose newest record
+        // has aged past maxAgeMs). Without this guard every bin computes
+        // maxOpacity * 0 / 0 = NaN -> opacity "NaN" -> "#ff0000NaN", an invalid
+        // colour that ECharts paints as a solid black disc. Degrade gracefully to
+        // a transparent ring instead.
+        return "#ffffff00";
+    }
     let ticksNumber = splitNumber * axisTickSplitNumber;
     let range = max - min;
     let ticksRange = (range / ticksNumber);
