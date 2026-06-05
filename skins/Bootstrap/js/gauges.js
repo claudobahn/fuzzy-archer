@@ -462,7 +462,7 @@ function getGaugeOption(name, min, max, splitNumber, axisTickSplitNumber, lineCo
             detail: {
                 fontWeight: 'bold',
                 fontSize: weewxData.detailFontSize === undefined ? 12 : weewxData.detailFontSize,
-                color: '#777',
+                color: weewxData.detailColor === undefined ? '#777' : weewxData.detailColor,
                 formatter: function (value) {
                     if (isNaN(value)) {
                         return undefined;
