@@ -112,23 +112,28 @@ function loadCharts() {
 
         chartSeriesConfigs.push(getDayNightSeries(chartOption, chartId, start, end));
 
-        // Bar series + type:"time" xAxis + no visible bars (all data
-        // empty, null, or zero) is an ECharts quirk: the coordinate
-        // system gets set up correctly but xAxis tick labels are
-        // silently suppressed. Verified empirically -- rain (empty bar
-        // after all-null aggregation) and radiation (UV all-zero bar at
-        // night) rendered with no xAxis ticks; lightning_strikes (empty
-        // SCATTER on the same dashboard with identical xAxis config)
-        // rendered ticks normally. Switch invisible bars to invisible
-        // lines so ECharts treats the chart as line-only for axis
-        // rendering purposes; the series stays in chartOption.series so
-        // any later updateChart() / addValue() flow still finds it by
-        // name. The next loadCharts() pass sees hasVisibleBar=true once
-        // non-zero data arrives and leaves the series as type:"bar".
+        // Bar series + type:"time" xAxis + no visible bars IN THE WINDOW is an
+        // ECharts quirk: the coordinate system sets up but the xAxis collapses --
+        // ticks are suppressed and the axis loses its [min,max] range (extent goes
+        // [null,null]), so the chart no longer lines up with the line charts.
+        // Verified empirically -- rain (empty bar after all-null aggregation, OR
+        // bars that exist only OUTSIDE the current window because it last rained
+        // hours ago) and radiation (UV all-zero bar at night) rendered with a
+        // broken xAxis; lightning_strikes (empty SCATTER, identical xAxis config)
+        // rendered fine. Switch such bars to invisible lines so ECharts treats the
+        // chart as line-only for axis rendering; the series stays in
+        // chartOption.series so any later updateChart()/addValue() still finds it
+        // by name, and the next loadCharts() pass restores type:"bar" once a
+        // non-zero bar lands in-window.
+        //
+        // The visibility test is WINDOWED to [start, end]: a non-zero bar outside
+        // the current view (e.g. this morning's rain on a now-dry afternoon) must
+        // NOT keep the series a bar, or the in-window axis breaks anyway.
         chartOption.series.forEach(s => {
             if (s.type !== "bar") return;
             let hasVisibleBar = s.data && s.data.some(p =>
                 Array.isArray(p) && p[1] !== null && p[1] !== undefined && Number(p[1]) > 0
+                && p[0] >= start && p[0] <= end
             );
             if (!hasVisibleBar) {
                 s.type = "line";
