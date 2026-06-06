@@ -169,24 +169,38 @@ function getDayNightSeries(chartOption, chartId, start, end) {
         data[data.length - 1][0] = end;
     }
 
-    // Anchor the dayNight series with real y values (0) instead of undefined.
-    // ECharts treats a series with all-undefined y values as having no usable
-    // data: for charts where this synthetic series is the ONLY one with
+    // Anchor the dayNight series so EMPTY charts still initialise a coordinate
+    // system. ECharts treats a series with all-undefined y values as having no
+    // usable data: for charts where this synthetic series is the ONLY one with
     // anchored points (rain with all-null archive rows, lightning_strikes
     // scatter with no strike events), no coordinate system is initialised,
     // no xAxis ticks render, and the markArea has nothing to paint against.
-    // With real (0, 0) values the coord system always initialises and the
-    // markArea bands render reliably -- empty data charts now show their
-    // axes + day/night shading instead of a blank rectangle.
     //
-    // The line itself stays invisible: lineStyle.opacity=0 hides the segment
-    // between the two anchor points, symbol='none' hides the markers. So the
-    // y=0 anchors do their job without drawing a visible flat line across
-    // every chart.
+    // But a y=0 anchor is harmful on a chart that DOES have real data: scale:true
+    // fits the min/max of EVERY series on the axis, so the 0 anchor drags the
+    // floor to zero -- non-zero-based charts render 0-30 (barometer ~29.8) or
+    // 0-80 (outTemp ~70) instead of fitting their band. So only anchor at 0 when
+    // there's no real data to set the range; otherwise leave the y values
+    // undefined and let the real series scale the axis. (getDayNightMarkArea
+    // bands are xAxis-only -- they span the full height regardless -- so the
+    // shading renders identically either way; only the y-extent differs.)
+    //
+    // "Real data" = any non-null/undefined y in any already-built series (0 counts
+    // -- an all-zero night radiation chart has a usable coord system and needs no
+    // anchor). All-null / empty series fall through to the 0 anchor.
+    //
+    // The line itself stays invisible: lineStyle.opacity=0 + symbol='none'.
+    let hasRealData = chartOption.series.some(s =>
+        Array.isArray(s.data) && s.data.some(p =>
+            Array.isArray(p) ? (p[1] !== null && p[1] !== undefined)
+                             : (p !== null && p !== undefined)
+        )
+    );
+    let anchorY = hasRealData ? undefined : 0;
     let dayNightSerie = {
         "name": DAY_NIGHT,
         "type": "line",
-        "data": [[start, 0], [end, 0]],
+        "data": [[start, anchorY], [end, anchorY]],
         "lineStyle": { "opacity": 0 },
         "symbol": "none",
         "markArea": getDayNightMarkArea(),
