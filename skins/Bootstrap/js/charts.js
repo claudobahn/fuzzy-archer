@@ -141,9 +141,16 @@ function loadCharts() {
         chartOption.textStyle = {
             fontSize: chart.weewxData.fontSize === undefined ? 10 : chart.weewxData.fontSize,
         };
+        // EXPERIMENTAL (sailing-center): inject the wind rolling-stat overlays
+        // into this chart's option BEFORE it renders, so they're part of the
+        // normal build -- one setOption, palette stays aligned (overlays carry
+        // explicit colours), no getOption round-trip. No-op except the wind chart.
+        // Defined in the WIND-STAT block appended at the end of this file.
+        if (typeof windStatInject === "function") windStatInject(chart, chartOption, chartId);
         chart.setOption(chartOption);
         chartElement.appendChild(getTimestampDiv(documentChartId, timestamp));
     }
+
 }
 
 function getBooleanOrDefault(value, defaultValue) {
@@ -825,3 +832,232 @@ function getColorModifier(extent) {
         Number('0x' + nightBackGroundColorModifier) * extent
     ).toString(16).padStart(2, '0');
 }
+
+// ===========================================================================
+// MCSC wind chart (sailing-center) -- finalized per the implementation spec.
+// Integrated into this fork-of-the-fork charts.js (delivered via station.yaml
+// branding.fragments: [js/charts.js], which overwrites the skin's copy).
+//
+// At-a-glance, sailing-aware view of the live wind chart:
+//   - sailing flag bands (Light/Medium/Heavy/No-sailing) as the background
+//   - speed: rolling-median spine + IQR band (sustained / gust-suppressed)
+//   - gust:  rolling-median spine + a "ceiling" zone (speed p75 floor -> gust p90)
+//   - raw 60 s dots kept on top (honesty layer)
+//   - a discrete "now" readout (zero-phase bands stop ~2.5 min short of live edge)
+//
+// Fixed design, no control bar. windStatInject() runs from loadCharts() with the
+// chart option BEFORE setOption (one build pass; overlays carry explicit colours
+// so the base palette is untouched). Window = 5 min CENTERED + TIME-based, so
+// batched/dropped records stay correct. Percentiles are type-7 (linear interp).
+// Y is anchored at 0 but the TOP autoscales (the fixed 0-30 was only for
+// comparing variants). Gust = per-minute max => an upper extreme by construction,
+// so its band is a one-sided ceiling, never a symmetric tail.
+// ===========================================================================
+(function () {
+  var CHART_KEY = "windSpeedChart";   // ECharts instance key + DOM id
+  var CHART_ID  = "windSpeed";        // weewxData.charts id (loadCharts loop key)
+  var SPEED_OBS = "windSpeed", GUST_OBS = "windGust";
+  var MARK = "__wsc";
+  var HALF_MS = 2.5 * 60000;          // half of the 5-min centered window
+  var SPEED = "#428bca", GUST = "#b44242", GRID = "#e7e7f0", AXIS = "#9aa0ad";
+
+  // sailing flag bands (club colours). hi=Infinity -> open-topped band (see flagCarrier)
+  var FLAGS = [
+    { name: "Light",      lo: 0,  hi: 10,       flag: "#ffffff", fill: null,      alpha: 0,    ink: "#6b7884", border: "#c9ced6" },
+    { name: "Medium",     lo: 10, hi: 15,       flag: "#ffc000", fill: "#ffc000", alpha: 0.08, ink: "#9a7400", border: null },
+    { name: "Heavy",      lo: 15, hi: 20,       flag: "#00b050", fill: "#00b050", alpha: 0.08, ink: "#1f7a55", border: null },
+    { name: "No sailing", lo: 20, hi: Infinity, flag: "#000000", fill: "#22262e", alpha: 0.11, ink: "#2a2e36", border: null }
+  ];
+
+  function num(a, b) { return a - b; }
+  function wsQuantile(sorted, q) {            // type-7 / inclusive linear interpolation
+    var n = sorted.length; if (n === 0) return null; if (n === 1) return sorted[0];
+    var pos = (n - 1) * q, base = Math.floor(pos), rest = pos - base;
+    return sorted[base + 1] !== undefined ? sorted[base] + rest * (sorted[base + 1] - sorted[base]) : sorted[base];
+  }
+  function valsInWindow(arr, t) {             // values within +/- HALF_MS of t
+    var out = [];
+    for (var i = 0; i < arr.length; i++) {
+      var p = arr[i];
+      if (p[0] >= t - HALF_MS && p[0] <= t + HALF_MS && p[1] !== null && p[1] !== undefined && !isNaN(p[1]))
+        out.push(Number(p[1]));
+    }
+    return out;
+  }
+  function rgba(hex, a) {
+    var h = hex.replace("#", "");
+    return "rgba(" + parseInt(h.substr(0, 2), 16) + "," + parseInt(h.substr(2, 2), 16) + "," + parseInt(h.substr(4, 2), 16) + "," + a + ")";
+  }
+
+  function band(stack, lower, delta, color, alpha, z) {
+    var base = { type: "line", stack: stack, name: "", symbol: "none", silent: true, z: z,
+                 yAxisIndex: 0, smooth: true, lineStyle: { opacity: 0 } };
+    base[MARK] = true;
+    return [ Object.assign({}, base, { data: lower, areaStyle: { opacity: 0 } }),
+             Object.assign({}, base, { data: delta, areaStyle: { color: color, opacity: alpha } }) ];
+  }
+  function spine(name, data, color, width, z) {
+    var s = { type: "line", name: name, data: data, symbol: "none", z: z, yAxisIndex: 0,
+              smooth: true, silent: true, lineStyle: { color: color, width: width }, itemStyle: { color: color } };
+    s[MARK] = true; return s;
+  }
+  function flagLabel(f) {
+    // open-topped band (No sailing) centers off-screen -> anchor at its bottom;
+    // finite bands center vertically.
+    return { show: true, position: f.hi === Infinity ? "insideBottomLeft" : "insideLeft", distance: 7,
+      rich: { sw: { width: 9, height: 9, backgroundColor: f.flag, borderColor: f.border || f.flag, borderWidth: f.border ? 1 : 0 },
+              tx: { color: f.ink, fontSize: 10, padding: [0, 0, 0, 5] } },
+      formatter: "{sw|}{tx|" + f.name + "}",
+      backgroundColor: "rgba(255,255,255,0.78)", borderColor: "rgba(0,0,0,0.06)", borderWidth: 1,
+      padding: [2, 6, 2, 4], borderRadius: 9 };
+  }
+  function flagCarrier(firstT, lastT) {
+    // No-sailing top: a large constant (not 'max', which markArea resolves against
+    // the carrier's null data) so the band fills to the autoscaling axis top.
+    var s = { type: "line", name: "", data: [[firstT, null], [lastT, null]], symbol: "none",
+              silent: true, z: -2, yAxisIndex: 0, lineStyle: { opacity: 0 },
+              markArea: { silent: true, data: FLAGS.map(function (f) {
+                return [ { yAxis: f.lo, itemStyle: { color: f.alpha ? rgba(f.fill, f.alpha) : "rgba(0,0,0,0)" }, label: flagLabel(f) },
+                         { yAxis: f.hi === Infinity ? 999 : f.hi } ]; }) } };
+    s[MARK] = true; return s;
+  }
+
+  // build the overlay series from the wind chart's own [t,v] data arrays
+  function buildWind(speed, gust) {
+    if (!speed || speed.length === 0) return { series: [], byT: {} };
+    gust = gust || [];
+    var firstT = speed[0][0], lastT = speed[speed.length - 1][0];
+    var gustByT = {}, g;
+    for (g = 0; g < gust.length; g++) gustByT[gust[g][0]] = gust[g][1];
+    var sMed = [], sLo = [], sDelta = [], gMed = [], gLo = [], gDelta = [];
+    var byT = {};   // per-timestamp lookup for the hover popover (raw + smoothed)
+    for (var i = 0; i < speed.length; i++) {
+      var t = speed[i][0];
+      byT[t] = { sRaw: speed[i][1], gRaw: gustByT[t] === undefined ? null : gustByT[t],
+                 sMed: null, sLo: null, sHi: null, gMed: null };
+      if (t < firstT + HALF_MS || t > lastT - HALF_MS) continue;   // centered window not full -> honest gap
+      var sw = valsInWindow(speed, t); if (sw.length < 2) continue;
+      sw.sort(num);
+      var p25 = wsQuantile(sw, 0.25), p50 = wsQuantile(sw, 0.5), p75 = wsQuantile(sw, 0.75);
+      sMed.push([t, p50]); sLo.push([t, p25]); sDelta.push([t, p75 - p25]);
+      byT[t].sMed = p50; byT[t].sLo = p25; byT[t].sHi = p75;
+      var gw = valsInWindow(gust, t);
+      if (gw.length) {
+        gw.sort(num);
+        var gMd = wsQuantile(gw, 0.5), gP90 = wsQuantile(gw, 0.9);
+        var lo = Math.min(p75, gP90);
+        gMed.push([t, gMd]); gLo.push([t, lo]); gDelta.push([t, Math.max(0, gP90 - lo)]);
+        byT[t].gMed = gMd;
+      } else { gMed.push([t, null]); gLo.push([t, null]); gDelta.push([t, null]); }
+    }
+    var series = [];
+    series.push(flagCarrier(firstT, lastT));                        // background flag bands (z -2)
+    series = series.concat(band("wsc_gceil", gLo, gDelta, GUST, 0.15, -1));   // gust ceiling fill
+    series = series.concat(band("wsc_siqr", sLo, sDelta, SPEED, 0.18, 0));    // speed IQR fill
+    series.push(spine("gust", gMed, GUST, 2.2, 5));                 // gust median spine
+    series.push(spine("speed", sMed, SPEED, 2.4, 6));              // speed median spine
+    return { series: series, byT: byT };
+  }
+
+  function seriesDataFrom(seriesArr, obs) {
+    for (var i = 0; i < seriesArr.length; i++) { var s = seriesArr[i]; if (s.weewxColumn === obs && Array.isArray(s.data)) return s.data; }
+    return null;
+  }
+  // jsonengine's combine_series() interleaves the daily high/low samples into the
+  // obs array as 3-element [ts, val, "max"|"min"] points -- duplicating a real
+  // sample's timestamp. Drop them: they'd double-draw a dot and double-count in
+  // the rolling window. The skin's markPoint uses the separate _daily_high_low
+  // key, so the "13.3" max/min labels are unaffected.
+  function stripMarkers(seriesArr, obs) {
+    for (var i = 0; i < seriesArr.length; i++) {
+      var s = seriesArr[i];
+      if (s.weewxColumn === obs && Array.isArray(s.data)) {
+        s.data = s.data.filter(function (e) { return !(Array.isArray(e) && e.length > 2); });
+        return;
+      }
+    }
+  }
+  function styleDots(seriesArr, obs) {       // raw dots: faint, slightly larger; keep palette colour + mark points
+    for (var i = 0; i < seriesArr.length; i++) {
+      var s = seriesArr[i];
+      if (s.weewxColumn === obs) { s.symbolSize = 3.4; s.itemStyle = Object.assign({}, s.itemStyle, { opacity: 0.55 }); return; }
+    }
+  }
+  function setYAxis(chartOption) {            // bottom anchored at 0; TOP autoscales
+    var y = Array.isArray(chartOption.yAxis) ? chartOption.yAxis[0] : chartOption.yAxis;
+    if (!y) { y = {}; chartOption.yAxis = y; }
+    y.min = 0; y.scale = false;
+    y.splitLine = Object.assign({}, y.splitLine, { lineStyle: Object.assign({}, (y.splitLine || {}).lineStyle, { color: GRID }) });
+    y.axisLabel = Object.assign({}, y.axisLabel, { color: AXIS });
+  }
+
+  // ---- hover popover (median-led, mirrored rows) -------------------------
+  function fmtClock(t) {
+    var tz; try { tz = weewxData.config.station_timezone; } catch (e) {}
+    try { return new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz || undefined }); }
+    catch (e) { return new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }); }
+  }
+  function tipRow(color, label, val, u) {
+    return '<div style="display:flex;align-items:center;margin-top:3px">'
+      + '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + color + ';margin-right:6px"></span>'
+      + '<span style="flex:1">' + label + '</span>'
+      + '<b style="margin-left:16px">' + val + u + '</b></div>';
+  }
+  function tipSub(txt) { return '<div style="color:#9aa0ad;font-size:11px;margin:0 0 1px 14px">' + txt + '</div>'; }
+  // u = configured speed-unit label with a leading space (e.g. " knots", " mph"); NOT hardcoded.
+  function windTooltip(byT, u) {
+    return {
+      trigger: "axis",
+      axisPointer: { type: "line", lineStyle: { color: "#c0c4cc" } },
+      backgroundColor: "rgba(255,255,255,0.97)", borderColor: "#e0e0e8", borderWidth: 1,
+      textStyle: { color: "#333", fontSize: 12 },
+      extraCssText: "box-shadow:0 2px 8px rgba(0,0,0,0.15);border-radius:6px;",
+      formatter: function (params) {
+        if (!params || !params.length) return "";
+        var t = params[0].axisValue, d = byT[t];
+        if (!d) return "";
+        var r = function (x) { return Math.round(x); };
+        var sHead = d.sMed != null ? r(d.sMed) : (d.sRaw != null ? r(d.sRaw) : "–");
+        var gHead = d.gMed != null ? r(d.gMed) : (d.gRaw != null ? r(d.gRaw) : "–");
+        var sSub = "actual " + (d.sRaw != null ? r(d.sRaw) : "–")
+          + (d.sLo != null && d.sHi != null ? " · typ " + r(d.sLo) + "–" + r(d.sHi) + u : u);
+        var gSub;
+        if (d.gMed != null && d.sMed != null)
+          gSub = "actual " + (d.gRaw != null ? r(d.gRaw) : "–") + " · gust factor +" + (r(d.gMed) - r(d.sMed)) + u;
+        else
+          gSub = "actual " + (d.gRaw != null ? r(d.gRaw) : "–") + u;
+        return '<div style="min-width:160px;font-variant-numeric:tabular-nums">'
+          + '<div style="color:#8a8a8a;font-size:11px;margin-bottom:2px">' + fmtClock(t) + '</div>'
+          + tipRow(SPEED, "Sustained Wind", sHead, u) + tipSub(sSub)
+          + tipRow(GUST, "Gust", gHead, u) + tipSub(gSub)
+          + '</div>';
+      }
+    };
+  }
+  // configured display unit for wind speed (the chart series' own label), leading-spaced.
+  function speedUnit(seriesArr) {
+    for (var i = 0; i < seriesArr.length; i++) {
+      var s = seriesArr[i];
+      if (s.weewxColumn === SPEED_OBS && s.unit) { var u = String(s.unit).trim(); if (u) return " " + u; }
+    }
+    return " kt";   // fallback only if the series carries no unit label
+  }
+
+  // BUILD-TIME hook: decorate the wind chart's option before setOption.
+  function windStatInject(chart, chartOption, chartId) {
+    if (chartId !== CHART_ID || !chartOption || !Array.isArray(chartOption.series)) return;
+    stripMarkers(chartOption.series, SPEED_OBS);   // drop inline daily-high/low dup markers (dots + stats)
+    stripMarkers(chartOption.series, GUST_OBS);
+    var speed = seriesDataFrom(chartOption.series, SPEED_OBS);
+    if (!speed) return;
+    var gust = seriesDataFrom(chartOption.series, GUST_OBS) || [];
+    styleDots(chartOption.series, SPEED_OBS);
+    styleDots(chartOption.series, GUST_OBS);
+    setYAxis(chartOption);
+    var built = buildWind(speed, gust);
+    for (var i = 0; i < built.series.length; i++) chartOption.series.push(built.series[i]);
+    chartOption.tooltip = windTooltip(built.byT, speedUnit(chartOption.series));   // median-led 2-row popover (overrides skin default)
+  }
+
+  window.windStatInject = windStatInject;
+})();
