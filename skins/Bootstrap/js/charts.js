@@ -59,10 +59,10 @@ function loadCharts() {
                 obs_group: category.obs_group,
                 weewxColumn: categoryId,
                 decimals: Number(category.decimals),
-                interval: category.interval,
-                minInterval: category.minInterval,
-                maxInterval: category.maxInterval,
-                splitNumber: category.splitNumber,
+                interval: numberOrUndefined(category.interval),
+                minInterval: numberOrUndefined(category.minInterval),
+                maxInterval: numberOrUndefined(category.maxInterval),
+                splitNumber: numberOrUndefined(category.splitNumber),
                 showMaxMarkPoint: getBooleanOrDefault(category.showMaxMarkPoint, false),
                 showMinMarkPoint: getBooleanOrDefault(category.showMinMarkPoint, false),
                 showAvgMarkLine: getBooleanOrDefault(category.showAvgMarkLine, false),
@@ -155,6 +155,15 @@ function loadCharts() {
 
 function getBooleanOrDefault(value, defaultValue) {
     return value === undefined ? defaultValue : value.toLowerCase() === 'true';
+}
+
+// Numeric axis params (interval/minInterval/maxInterval/splitNumber) arrive from
+// the skin/weewxData config as strings. ECharts needs real numbers: a string
+// minInterval like "5" yields uneven split lines (e.g. ticks 60,65,80 instead of
+// 60,65,70,75,80). Coerce, but keep undefined/empty as undefined so ECharts auto-
+// scales (decimals is already Number()-ed the same way).
+function numberOrUndefined(value) {
+    return value === undefined || value === null || value === "" ? undefined : Number(value);
 }
 
 function getDayNightSeries(chartOption, chartId, start, end) {
